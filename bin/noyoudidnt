@@ -1,0 +1,140 @@
+#!/usr/bin/python
+
+
+from collections import defaultdict
+from datetime import datetime, timedelta, tzinfo
+import logging
+import os
+import re
+import subprocess
+
+
+DEVNULL = open(os.devnull, 'w')
+
+
+class FixedOffset(tzinfo):
+    """Fixed offset in minutes: `time = utc_time + utc_offset`."""
+    def __init__(self, offset):
+        self.__offset = timedelta(minutes=offset)
+        hours, minutes = divmod(offset, 60)
+        #NOTE: the last part is to remind about deprecated POSIX GMT+h timezones
+        #  that have the opposite sign in the name;
+        #  the corresponding numeric value is not used e.g., no minutes
+        self.__name = '<%+03d%02d>%+d' % (hours, minutes, -hours)
+    def utcoffset(self, dt=None):
+        return self.__offset
+    def tzname(self, dt=None):
+        return self.__name
+    def dst(self, dt=None):
+        return timedelta(0)
+    def __repr__(self):
+        return 'FixedOffset(%d)' % (self.utcoffset().total_seconds() / 60)
+
+
+def parse_line(line):
+    blame_regex = re.compile(r'[\w]+.* \((?P<name>[\w\s,]+) (?P<datetime>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<offset>[-+]\d{4}).*(?i)TODO[:\s]*(?P<message>.*)$')
+    matched = blame_regex.match(line)
+    if matched:
+        timestamp = datetime.strptime(matched.group('datetime'), '%Y-%m-%d %H:%M:%S')
+        offset_str = matched.group('offset')
+        offset = int(offset_str[-4:-2])*60 + int(offset_str[-2:])
+        if offset_str[0] == "-":
+            offset = -offset
+        timestamp = timestamp.replace(tzinfo=FixedOffset(offset))
+        return {
+            'name': matched.group('name').strip(),
+            'timestamp': timestamp,
+            'message': matched.group('message').strip(),
+        }
+
+
+def parse_git_blame(file_path):
+    # TODO: use git blame -t ....
+    cmd_1 = 'git blame {}'.format(file_path)
+    cmd_2 = 'grep -i TODO'
+
+    proc_1 = subprocess.Popen(cmd_1.split(), stdout=subprocess.PIPE, stderr=DEVNULL)
+    try:
+        proc_2 = subprocess.check_output(cmd_2.split(), stdin=proc_1.stdout)
+    except subprocess.CalledProcessError as err:
+        err_msg = 'Subprocess error: {}'.format(err)
+        logging.debug(err_msg)
+        return {}
+
+    blames_by_name = defaultdict(list)
+    for line in proc_2.splitlines():
+        if line.startswith('Binary file'):
+            continue
+
+        line_data = parse_line(line)
+        line_data['file_path'] = file_path
+        blames_by_name[line_data['name']].append(line_data)
+    return blames_by_name
+
+
+def files_with_todo():
+    def grep_todo():
+        cmd = 'grep -ir'
+        exclude_dirs = ['ENV*', 'static-build', 'htmlcov', 'tmp', 'lib']
+        for exclude_dir in exclude_dirs:
+            cmd += ' --exclude-dir={}'.format(exclude_dir)
+        
+        excludes = ['\*.pyc', '\*.json']
+        for exclude in excludes:
+            cmd += ' --exclude={}'.format(exclude)
+        #includes = ['\*.py']
+        includes = []
+        for include in includes:
+            cmd += ' --include={}'.format(include)
+        cmd += ' "TODO" *'
+        return subprocess.check_output(cmd, shell=True)
+
+    file_paths = []
+    path_regex = re.compile(r'^(?P<file_path>[^:]*):.*')
+    for line in grep_todo().splitlines():
+        if line.startswith('Binary file'):
+            continue
+        file_path = path_regex.match(line)
+        file_paths.append(file_path.group('file_path'))
+    return set(file_paths)
+
+
+def set_logger():
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.WARNING)
+
+
+def render(datas_by_name):
+    path_width = 0
+    for blame_datas in datas_by_name.values():
+        for blame_data in blame_datas:
+            curr_len = len(blame_data['file_path'])
+            if path_width < curr_len:
+                path_width = curr_len
+
+    for name, blame_datas in datas_by_name.items():
+        print name, '\t\t', len(blame_datas)
+        for blame_data in blame_datas:
+            print '    {file_path} {timestamp}   {message}'.format(
+                file_path=blame_data['file_path'].ljust(path_width + 3),
+                timestamp=blame_data['timestamp'].isoformat().ljust(26),
+                message=blame_data['message'])
+        print ''
+
+
+def aggregate_blames():
+    result = defaultdict(list)
+    for file_path in files_with_todo():
+        for name, blame_data in parse_git_blame(file_path).items():
+            result[name] += blame_data
+    return result
+
+
+def main():
+    datas_by_name = aggregate_blames()
+    render(datas_by_name)
+
+
+if __name__ == '__main__':
+    set_logger()
+    main()
