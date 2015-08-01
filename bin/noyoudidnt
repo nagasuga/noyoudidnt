@@ -51,7 +51,7 @@ def parse_line(line):
 def parse_git_blame(file_path):
     # TODO: use git blame -t ....
     cmd_1 = 'git blame {}'.format(file_path)
-    cmd_2 = 'grep -i TODO'
+    cmd_2 = 'grep TODO'
 
     proc_1 = subprocess.Popen(cmd_1.split(), stdout=subprocess.PIPE, stderr=DEVNULL)
     try:
@@ -74,7 +74,7 @@ def parse_git_blame(file_path):
 
 def files_with_todo():
     def grep_todo():
-        cmd = 'grep -ir'
+        cmd = 'grep -r'
         exclude_dirs = ['ENV*', 'static-build', 'htmlcov', 'tmp', 'lib']
         for exclude_dir in exclude_dirs:
             cmd += ' --exclude-dir={}'.format(exclude_dir)
